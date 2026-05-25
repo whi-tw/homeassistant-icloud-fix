@@ -2,15 +2,20 @@
 
 Unofficial patched version of the [Home Assistant **Apple iCloud**](https://www.home-assistant.io/integrations/icloud) integration.
 
+
+
 This custom component fixes a problem where Home Assistant asks for an Apple verification code during setup or reauthentication, but Apple does not actually send or show a usable 2FA code.
 It updates the iCloud authentication flow so that Home Assistant explicitly requests an Apple two-factor authentication code before showing the verification-code form.
 
 There are several long-running **issues** related to this problem, including:
-- [iCloud integration continuously pops MFA approval](home-assistant/core#101816)
-- [iCloud integration stopped working due to Apple SRP-6a implementation](home-assistant/core#128830)
-- [Apple iCloud Integration not working for months](home-assistant/core#170959)
-- [iCloud integration causes PIN code requests on Apple devices](home-assistant/core#67510)
-- [iCloud stopped working after updating to 2026.1](home-assistant/core#160536)
+ 
+- home-assistant/core#67510 - [iCloud integration causes PIN code requests on Apple devices](https://github.com/home-assistant/core/issues/67510)
+- home-assistant/core#101816 - [iCloud integration continuously pops MFA approval](https://github.com/home-assistant/core/issues/101816)
+- home-assistant/core#128830 - [iCloud integration stopped working due to Apple SRP-6a implementation](https://github.com/home-assistant/core/issues/128830)
+- home-assistant/core#160536 - [iCloud stopped working after updating to 2026.1](https://github.com/home-assistant/core/issues/160536)
+- home-assistant/core#170959 - [Apple iCloud Integration not working for months](https://github.com/home-assistant/core/issues/170959)
+
+**Relevant upstream PR:** home-assistant/core#171863
 
 ### What This Fixes
 
