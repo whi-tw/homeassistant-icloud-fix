@@ -2,14 +2,7 @@
 
 from typing import Any
 
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.storage import Store
-from homeassistant.helpers.typing import ConfigType
-
-from .account import IcloudAccount, IcloudConfigEntry
-from .const import (
+from homeassistant.components.icloud.const import (
     CONF_GPS_ACCURACY_THRESHOLD,
     CONF_MAX_INTERVAL,
     CONF_WITH_FAMILY,
@@ -18,7 +11,15 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .services import async_setup_services
+from homeassistant.components.icloud.services import async_setup_services
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
+
+from .account import IcloudAccount, IcloudConfigEntry
+from .media_source import async_setup_mediasource, async_setup_photo_cache
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -27,7 +28,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up iCloud integration."""
 
     async_setup_services(hass)
-
+    async_setup_mediasource(hass)
     return True
 
 
@@ -56,15 +57,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: IcloudConfigEntry) -> bo
         gps_accuracy_threshold,
         entry,
     )
-    await hass.async_add_executor_job(account.setup)
 
     entry.runtime_data = account
 
+    await hass.async_add_executor_job(account.setup)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await async_setup_photo_cache(hass, account)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: IcloudConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        await hass.async_add_executor_job(entry.runtime_data.cancel_fetch)
+    return unload_ok

@@ -1,25 +1,15 @@
-"""Config flow to configure the iCloud integration."""
+"""Config flow to configure the iCloud integration, with an explicit 2FA fix."""
 
+import logging
 from collections.abc import Mapping
 from functools import partial
-import logging
-import os
 from typing import TYPE_CHECKING, Any
 
-from pyicloud import PyiCloudService
-from pyicloud.exceptions import (
-    PyiCloudException,
-    PyiCloudFailedLoginException,
-    PyiCloudNoDevicesException,
-    PyiCloudServiceNotActivatedException,
-)
 import voluptuous as vol
-
-from homeassistant.config_entries import SOURCE_USER, ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.helpers.storage import Store
-
-from .const import (
+from homeassistant.components.icloud.config_flow import (
+    IcloudFlowHandler as _UpstreamIcloudFlowHandler,
+)
+from homeassistant.components.icloud.const import (
     CONF_GPS_ACCURACY_THRESHOLD,
     CONF_MAX_INTERVAL,
     CONF_WITH_FAMILY,
@@ -30,69 +20,44 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from homeassistant.config_entries import SOURCE_USER, ConfigFlowResult
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.helpers.storage import Store
+from pyicloud import PyiCloudService
+from pyicloud.exceptions import (
+    PyiCloudException,
+    PyiCloudFailedLoginException,
+    PyiCloudNoDevicesException,
+    PyiCloudServiceNotActivatedException,
+)
 
-CONF_TRUSTED_DEVICE = "trusted_device"
 CONF_VERIFICATION_CODE = "verification_code"
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class IcloudFlowHandler(ConfigFlow, domain=DOMAIN):
-    """Handle an iCloud config flow."""
+class IcloudFlowHandler(_UpstreamIcloudFlowHandler, domain=DOMAIN):
+    """Handle an iCloud config flow, requesting a 2FA code up front.
 
-    VERSION = 1
+    Only the methods below are overridden. _show_setup_form,
+    async_step_user, async_step_trusted_device, and
+    _show_trusted_device_form are inherited unchanged from
+    homeassistant.components.icloud.config_flow.IcloudFlowHandler.
+
+    Re-declaring domain=DOMAIN here is required: importing the upstream
+    class above registers it in homeassistant.config_entries.HANDLERS for
+    the "icloud" domain as a side effect of its own class statement. This
+    class statement must run after that import so it overwrites that
+    registry entry with this subclass instead.
+    """
 
     def __init__(self) -> None:
         """Initialize iCloud config flow."""
-        self.api = None
-        self._username = None
-        self._password = None
-        self._with_family = None
-        self._max_interval = None
-        self._gps_accuracy_threshold = None
-
-        self._trusted_device = None
-        self._verification_code = None
-
-        self._existing_entry_data: dict[str, Any] | None = None
-        self._description_placeholders: dict[str, str] | None = None
+        super().__init__()
 
         # Track 2FA code requests so redisplaying the form does not repeatedly
         # request new Apple verification codes.
         self._2fa_code_requested: bool = False
-
-    def _show_setup_form(self, user_input=None, errors=None, step_id="user"):
-        """Show the setup form to the user."""
-
-        if user_input is None:
-            user_input = {}
-
-        if step_id == "user":
-            schema = {
-                vol.Required(
-                    CONF_USERNAME, default=user_input.get(CONF_USERNAME, "")
-                ): str,
-                vol.Required(
-                    CONF_PASSWORD, default=user_input.get(CONF_PASSWORD, "")
-                ): str,
-                vol.Optional(
-                    CONF_WITH_FAMILY,
-                    default=user_input.get(CONF_WITH_FAMILY, DEFAULT_WITH_FAMILY),
-                ): bool,
-            }
-        else:
-            schema = {
-                vol.Required(
-                    CONF_PASSWORD, default=user_input.get(CONF_PASSWORD, "")
-                ): str,
-            }
-
-        return self.async_show_form(
-            step_id=step_id,
-            data_schema=vol.Schema(schema),
-            errors=errors or {},
-            description_placeholders=self._description_placeholders,
-        )
 
     async def _create_icloud_api(self) -> PyiCloudService:
         """Create a pyicloud API object in the executor."""
@@ -204,7 +169,7 @@ class IcloudFlowHandler(ConfigFlow, domain=DOMAIN):
             )
             if not devices:
                 raise PyiCloudNoDevicesException  # noqa: TRY301
-        except (PyiCloudServiceNotActivatedException, PyiCloudNoDevicesException):
+        except PyiCloudServiceNotActivatedException, PyiCloudNoDevicesException:
             _LOGGER.error("No device found in the iCloud account: %s", self._username)
             self.api = None
             return self.async_abort(reason="no_device")
@@ -226,22 +191,6 @@ class IcloudFlowHandler(ConfigFlow, domain=DOMAIN):
         await self.hass.config_entries.async_reload(entry.entry_id)
         return self.async_abort(reason="reauth_successful")
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle a flow initiated by the user."""
-        errors: dict[str, str] = {}
-
-        icloud_dir = Store[Any](self.hass, STORAGE_VERSION, STORAGE_KEY)
-
-        if not os.path.exists(icloud_dir.path):
-            await self.hass.async_add_executor_job(os.makedirs, icloud_dir.path)
-
-        if user_input is None:
-            return self._show_setup_form(user_input, errors)
-
-        return await self._validate_and_create_entry(user_input, "user")
-
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
@@ -261,64 +210,6 @@ class IcloudFlowHandler(ConfigFlow, domain=DOMAIN):
             return self._show_setup_form(step_id="reauth_confirm")
 
         return await self._validate_and_create_entry(user_input, "reauth_confirm")
-
-    async def async_step_trusted_device(
-        self,
-        user_input: dict[str, Any] | None = None,
-        errors: dict[str, str] | None = None,
-    ) -> ConfigFlowResult:
-        """We need a trusted device."""
-        if errors is None:
-            errors = {}
-
-        if TYPE_CHECKING:
-            assert self.api is not None
-
-        trusted_devices = await self.hass.async_add_executor_job(
-            getattr, self.api, "trusted_devices"
-        )
-        trusted_devices_for_form = {}
-        for i, device in enumerate(trusted_devices):
-            trusted_devices_for_form[i] = device.get(
-                "deviceName", f"SMS to {device.get('phoneNumber')}"
-            )
-
-        if user_input is None:
-            return await self._show_trusted_device_form(
-                trusted_devices_for_form, errors
-            )
-
-        self._trusted_device = trusted_devices[int(user_input[CONF_TRUSTED_DEVICE])]
-
-        if not await self.hass.async_add_executor_job(
-            self.api.send_verification_code, self._trusted_device
-        ):
-            _LOGGER.error("Failed to send verification code")
-            self._trusted_device = None
-            errors[CONF_TRUSTED_DEVICE] = "send_verification_code"
-
-            return await self._show_trusted_device_form(
-                trusted_devices_for_form, errors
-            )
-
-        return await self.async_step_verification_code()
-
-    async def _show_trusted_device_form(
-        self, trusted_devices, errors: dict[str, str] | None = None
-    ) -> ConfigFlowResult:
-        """Show the trusted_device form to the user."""
-
-        return self.async_show_form(
-            step_id="trusted_device",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_TRUSTED_DEVICE): vol.All(
-                        vol.Coerce(int), vol.In(trusted_devices)
-                    )
-                }
-            ),
-            errors=errors or {},
-        )
 
     async def async_step_verification_code(
         self,
